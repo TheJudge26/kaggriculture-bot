@@ -1,9 +1,16 @@
-WHEAT_PLOT = [(4, 4), (4, 3), (3, 4), (3, 3), (4, 2), (3, 2), (2, 4), (2, 3), (2, 2)]
-MELON_PLOT = [(4, 1), (3, 1), (2, 1)]
+WHEAT_PLOT = [
+    (4, 4), (4, 3), (4, 2),
+    (3, 4), (3, 3), (3, 2),
+    (2, 4), (2, 3), (2, 2),
+    (1, 4), (1, 3), (1, 2),
+    (0, 4), (0, 3)
+]
+MELON_PLOT = [(4, 1), (3, 1), (2, 1), (1, 1)]
+ALL_PLOT = WHEAT_PLOT + MELON_PLOT
 
 def agent(obs):
     """
-    Version 3: Multi-worker farm with Wheat & Melons
+    Version 4: 18-Tile Plantation with 2 Helpers, Weed Digging & Seed Cutoffs
     """
     player = obs["player"]
     me = obs["farms"][player]
@@ -14,22 +21,25 @@ def agent(obs):
     
     market = []
     
-    # HIRE 1 FARM HAND EVERY MORNING (Costs only 1 coin!)
-    if hour == 0 and me["hires_today"] == 0 and money >= 50:
-        market.append(["HIRE"])
-        money -= 1
-        
-    # SEED PURCHASES
-    empty_wheat = sum(1 for (x, y) in WHEAT_PLOT if me["tiles"][y][x] is None)
-    wheat_seeds = private["seeds"].get("WHEAT", 0)
-    needed_wheat = max(0, empty_wheat - wheat_seeds)
-    if needed_wheat > 0 and money >= 10:
-        qty = min(needed_wheat, int(money // 10))
-        if qty > 0:
-            market.append(["BUY_SEED", "WHEAT", qty])
-            money -= qty * 10
+    # HIRE 2 HANDS EVERY MORNING (Costs only $1 + $1 = $2 total!)
+    if hour == 0 and money >= 50:
+        needed_hires = 2 - me["hires_today"]
+        for _ in range(needed_hires):
+            market.append(["HIRE"])
             
-    # Melon seeds for empty melon plot tiles (only plant if day <= 19 so they mature before day 30)
+    # SMART SEED PURCHASES
+
+    if day <= 26:
+        empty_wheat = sum(1 for (x, y) in WHEAT_PLOT if me["tiles"][y][x] is None)
+        wheat_seeds = private["seeds"].get("WHEAT", 0)
+        needed_wheat = max(0, empty_wheat - wheat_seeds)
+        if needed_wheat > 0 and money >= 10:
+            qty = min(needed_wheat, int(money // 10))
+            if qty > 0:
+                market.append(["BUY_SEED", "WHEAT", qty])
+                money -= qty * 10
+
+    # Stop buying melons after day 19 (needs 10 full days to mature)
     if day <= 19:
         empty_melon = sum(1 for (x, y) in MELON_PLOT if me["tiles"][y][x] is None)
         melon_seeds = private["seeds"].get("MELON", 0)
@@ -40,18 +50,20 @@ def agent(obs):
                 market.append(["BUY_SEED", "MELON", qty])
                 money -= qty * 80
                 
-    # SELL ALL HARVESTED PRODUCE IN SHED
+    # SELL ALL PRODUCE SITTING IN SHED
     for prod in ["WHEAT", "MELON"]:
         cnt = private["shed"].get(prod, 0)
         if cnt > 0:
             market.append(["SELL", prod, cnt])
             
-    #  WORKER AI LOGIC (Used by both Farmer and Farm Hand)
-    def get_unit_action(pos, assigned_plot, preferred_crop):
+    # WORKER LOGIC (Farmer + 2 Helpers)
+    def get_unit_action(pos, preferred_plot, preferred_crop):
         ux, uy = pos
         tile = me["tiles"][uy][ux]
         
-        if (ux, uy) in assigned_plot:
+        if (ux, uy) in ALL_PLOT:
+            if isinstance(tile, dict) and tile.get("kind") == "WEED":
+                return ["DIG"]
             if isinstance(tile, dict) and tile.get("kind") == "PLANT":
                 crop = tile["crop"]
                 age = day - tile["planted_day"]
@@ -61,23 +73,34 @@ def agent(obs):
                 if not tile["watered_today"]:
                     return ["WATER"]
             elif tile is None:
-                if private["seeds"].get(preferred_crop, 0) > 0:
-                    return ["PLANT", preferred_crop]
-                elif preferred_crop == "MELON" and private["seeds"].get("WHEAT", 0) > 0:
+                if (ux, uy) in MELON_PLOT and day <= 19 and private["seeds"].get("MELON", 0) > 0:
+                    return ["PLANT", "MELON"]
+                elif day <= 26 and private["seeds"].get("WHEAT", 0) > 0:
                     return ["PLANT", "WHEAT"]
                     
         target = None
-        for (x, y) in assigned_plot:
-            t = me["tiles"][y][x]
-            if isinstance(t, dict) and t.get("kind") == "PLANT":
-                crop = t["crop"]
-                age = day - t["planted_day"]
-                max_age = 10 if crop == "MELON" else 4
-                if age >= max_age or not t["watered_today"]:
-                    target = (x, y)
-                    break
-            elif t is None and (private["seeds"].get(preferred_crop, 0) > 0 or private["seeds"].get("WHEAT", 0) > 0):
-                target = (x, y)
+        for p in [preferred_plot, ALL_PLOT]:
+            for (x, y) in p:
+                t = me["tiles"][y][x]
+                if isinstance(t, dict):
+                    if t.get("kind") == "WEED":
+                        target = (x, y)
+                        break
+                    elif t.get("kind") == "PLANT":
+                        crop = t["crop"]
+                        age = day - t["planted_day"]
+                        max_age = 10 if crop == "MELON" else 4
+                        if age >= max_age or not t["watered_today"]:
+                            target = (x, y)
+                            break
+                elif t is None:
+                    if (x, y) in MELON_PLOT and day <= 19 and private["seeds"].get("MELON", 0) > 0:
+                        target = (x, y)
+                        break
+                    elif day <= 26 and private["seeds"].get("WHEAT", 0) > 0:
+                        target = (x, y)
+                        break
+            if target:
                 break
                 
         if target:
@@ -89,11 +112,13 @@ def agent(obs):
             
         return ["PASS"]
 
-    farmer_act = get_unit_action(me["farmer"], WHEAT_PLOT + MELON_PLOT, "WHEAT")
+    farmer_act = get_unit_action(me["farmer"], WHEAT_PLOT, "WHEAT")
     
     hands_acts = []
-    for hpos in me["hands"]:
-        h_act = get_unit_action(hpos, MELON_PLOT + WHEAT_PLOT, "MELON")
+    for i, hpos in enumerate(me["hands"]):
+        pref = MELON_PLOT if i == 0 else WHEAT_PLOT
+        crop = "MELON" if i == 0 else "WHEAT"
+        h_act = get_unit_action(hpos, pref, crop)
         hands_acts.append(h_act)
         
     return {"farmer": farmer_act, "hands": hands_acts, "market": market}
